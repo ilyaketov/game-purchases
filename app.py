@@ -24,7 +24,7 @@ import pandas as pd
 import streamlit as st
 
 from engine import Pipeline
-from config import PLOSHADKA_MAP
+from config import PLOSHADKA_MAP, RUB_CNY_RATE
 
 
 # ===========================================================================
@@ -735,16 +735,30 @@ for i in range(0, n_ploshadki, n_per_row):
         with col:
             st.metric(key, f"{n:,}".replace(",", " "))
 
+# Файл распознан, но строк из него не прочитано — данные не на том листе
+# или поменялись заголовки. Раньше такая ситуация проходила незаметно
+# (август 2026: R1 читался с листа сводной, и весь R1 терялся).
+_rows = validation.rows_loaded or {}
+for _kind, _label in [("r1", "Универсальный отчёт"), ("r2", "Universal Report shipped"),
+                      ("genba", "genbaFile")]:
+    if by_kind.get(_kind) and _rows.get(_kind, 0) == 0:
+        st.error(
+            f"Файл «{_label}» распознан, но строк с данными из него не прочитано. "
+            "Проверьте, что лист с выгрузкой есть в файле и заголовки не изменились."
+        )
+
 # Неизвестные поставщики
 if validation.unmapped_suppliers:
     st.markdown('<div class="kf-spacer"></div>', unsafe_allow_html=True)
     with st.expander(
-        f"Неизвестные поставщики ({len(validation.unmapped_suppliers)}) — будут пропущены",
-        expanded=False,
+        f"Неизвестные поставщики ({len(validation.unmapped_suppliers)}) — попадут в свод с пометкой «НЕ РАСПОЗНАН»",
+        expanded=True,
     ):
         st.caption(
-            "Эти имена не сопоставлены с группами в эталоне. "
-            "Чтобы строки попали в отчёт, добавьте маппинги в `SUPPLIER_MAPPING` (config.py)."
+            "Эти имена не сопоставлены с группами поставщиков. Строки не теряются: "
+            "в своде они будут в отдельных группах «НЕ РАСПОЗНАН: …» (кроме B2B и GamersBase, "
+            "где такие строки пропускаются). Чтобы назначить правильную группу, добавьте "
+            "маппинг в `SUPPLIER_MAPPING` (config.py)."
         )
         df_unmapped = pd.DataFrame([
             {"Имя в биллинге": k, "Строк": v}
@@ -776,6 +790,16 @@ if not selected:
     st.stop()
 
 st.markdown('<div class="kf-spacer"></div>', unsafe_allow_html=True)
+
+# Курс RUB/CNY для CNY-поставщиков (Kishmish Games, One More Time, Callback Games, Soviet Games).
+# Бухгалтерия берёт кросс-курс на конец месяца: (RUB за USD) × (USD за CNY).
+rub_cny_rate = st.number_input(
+    "Курс RUB за 1 CNY (для CNY-поставщиков)",
+    min_value=1.0, max_value=100.0, value=float(RUB_CNY_RATE), step=0.01, format="%.4f",
+    help="Кросс-курс бухгалтерии на конец месяца: RUB за USD × USD за CNY. "
+         "Август 2026: 86,299298 × 0,14866 = 12,83.",
+)
+pipeline.rub_cny_rate = float(rub_cny_rate)
 
 run_clicked = st.button("Собрать отчёты", type="primary", use_container_width=False)
 

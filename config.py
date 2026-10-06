@@ -28,6 +28,8 @@ PARTNER_TO_ZONE = {
     "MP_Eneba":           ("закуп энеба",   "перемещение енеба"),
     "MP_G2A":             ("закуп г2а",     "перемещение на г2а"),
     "MP_Driffle":         ("закуп дриффл",  "перемещение дриффл"),
+    # GGSel — с августа 2026 отдельное подразделение 41.12 (раньше входил в Плати 41.06)
+    "MP_GGSel":           ("закуп ггсел",   "перемещение на ггсел"),
     "ChinaSteamPY":       ("закуп тао",     "перемещение на тао"),
     "ChinaPlayTaoBao":    ("закуп тао",     "перемещение на тао"),
     "StockB2B":           ("закуп b2b",     "закуп b2b"),
@@ -54,20 +56,27 @@ DEFAULT_B2B_ZONE = "Продажи б2б"
 # ---------------------------------------------------------------------------
 # r1, r2, genba — могут быть строкой ИЛИ списком строк (для комбинированных площадок)
 PLOSHADKA_MAP = {
-    "Plati":      {"r1": "закуп плати",   "r2": "закуп плати",                    "genba": "плати"},
-    "Kinguin":    {"r1": "закуп кингвин", "r2": "закуп кингвин",                  "genba": "кингвин"},
-    "Eneba":      {"r1": "закуп энеба",   "r2": "закуп энеба",                    "genba": "eneba"},
+    # genba: в genbaFile колонку 'площадка' заполняют по-разному от месяца к месяцу
+    # ('plati' в мае/июле, 'MP_Plati' в июне/августе) — перечисляем все варианты.
+    "Plati":      {"r1": "закуп плати",   "r2": "закуп плати",                    "genba": ["плати", "plati", "mp_plati"]},
+    "GGSel":      {"r1": "закуп ггсел",   "r2": "закуп ггсел",                    "genba": ["ggsel", "mp_ggsel"]},
+    "Kinguin":    {"r1": "закуп кингвин", "r2": "закуп кингвин",                  "genba": ["кингвин", "kinguin", "mp_kinguin"]},
+    "Eneba":      {"r1": "закуп энеба",   "r2": "закуп энеба",                    "genba": ["eneba", "mp_eneba"]},
     # G2A: в марте было 'закуп г2а' (русские буквы), с апреля — 'Закуп G2A' (английские G2A).
     # Поддерживаем оба варианта, чтобы исторические выгрузки тоже работали.
-    "G2A":        {"r1": None,            "r2": ["закуп г2а", "закуп g2a"],       "genba": "g2a"},
-    "Driffle":    {"r1": None,            "r2": "закуп дриффл",                   "genba": "driffle"},
-    "Tao":        {"r1": None,            "r2": "закуп тао",                      "genba": "тао"},
+    "G2A":        {"r1": None,            "r2": ["закуп г2а", "закуп g2a"],       "genba": ["g2a", "mp_g2a"]},
+    # Driffle: с августа 2026 часть закупа приходит в R1 (Универсальный отчёт)
+    "Driffle":    {"r1": "закуп дриффл",  "r2": "закуп дриффл",                   "genba": ["driffle", "mp_driffle"]},
+    "Tao":        {"r1": None,            "r2": "закуп тао",                      "genba": ["тао", "tao"]},
     "ChinaPlay":  {"r1": None,            "r2": ["закуп чайна", "costchinaplay"], "genba": ["chinaplay", "costchinaplay"]},
     "B2B":        {"r1": "продажи б2б",   "r2": ["закуп b2b", "Продажи б2б"],     "genba": "b2b",
                    # Закуп PLAION учитывается весь, даже если ключи передали на другие площадки:
                    # эталон агрегирует PLAION по всем зонам, не только по продажам б2б.
-                   "extra_supplier_substrings": ["PLAION"]},
-    "GamersBase": {"r1": None,            "r2": ["закуп гб", "costgb"],           "genba": ["gb", "costgb"]},
+                   "extra_supplier_substrings": ["PLAION"],
+                   # B2B: свод по замыслу частичный — неизвестные поставщики не включаются
+                   "keep_unknown": False},
+    "GamersBase": {"r1": None,            "r2": ["закуп гб", "costgb"],           "genba": ["gb", "costgb"],
+                   "keep_unknown": False},
 }
 
 # ---------------------------------------------------------------------------
@@ -125,6 +134,27 @@ SUPPLIER_MAPPING = {
     "Strategy First":              "Strategy First",
     "Frontier Developments":       "Frontier Developments",
     "Incenti":                     "Incenti",
+    # Новые поставщики, появившиеся в августе 2026 (раньше молча выпадали из свода)
+    "HOUND13 Inc.":                "Hound13 Inc.",
+    "Hound13 Inc.":                "Hound13 Inc.",
+    "Red Hook Studios":            "Red Hook Studios",
+    "Brightika, Inc.":             "Brightika, Inc.",
+    "Digital Sky":                 "Digital Sky Entertainment Limited",
+    "Digisky":                     "Digital Sky Entertainment Limited",
+    "Azura Interactive":           "Azura Interactive",
+    "Ustwo Games":                 "Ustwo Games",
+    "Boltray Games":               "Boltray Games",
+    "Indie.io":                    "Indie.io",
+    "SoloGame":                    "HONG KONG SOLO NETWORK TECHNOLOGY",
+    "HONG KONG SOLO NETWORK TECHNOLOGY": "HONG KONG SOLO NETWORK TECHNOLOGY",
+    "Stardock Entertainment":      "Stardock Entertainment",
+    "APPWILL COMPANY LTD":         "APPWILL COMPANY LTD",
+    "Forever-Entertainment":       "Forever-Entertainment",
+    "Cyber Temple Games LLC":      "Cyber Temple Games LLC",
+    "Astragon":                    "Astragon Entertainment GmbH",
+    "TOPHOUSE GAMES":              "TOPHOUSE GAMES",
+    "Mindscape":                   "Mindscape",
+    "Soviet Games":                "Soviet Games",
 }
 
 # Спецсопоставления по подстрокам (применяются раньше префиксного парсинга)
@@ -141,6 +171,8 @@ SUPPLIER_SUBSTRING_RULES = [
     ("(KRM Teknoloji)", "КRM"),
     # B2B: Giftcard Pro — 'USD GAMES. Blizzard (Giftcard Pro)'
     ("(Giftcard Pro)", "Giftcard pro LTD"),
+    # Incenti (Bamboo): 'USD GAMES. PlayStation USA (Incenti)', 'EUR GAMES. Blizzard (Incenti)'
+    ("(Incenti)", "Incenti"),
     # B2B: Capcom / Embark Studios как Genba-сток
     # (закупка идёт через Genba, в биллинге появляется под брендом продукта)
     ("Capcom (Stock)",        "Genba"),
@@ -158,8 +190,11 @@ SUPPLIER_EXACT_RULES = {
 # ---------------------------------------------------------------------------
 # CNY-поставщики: цена = (RUB-сумма из биллинга) / RUB_CNY_RATE
 # ---------------------------------------------------------------------------
-CNY_SUPPLIERS = {"Kishmish Games", "One More Time", "Callback Games"}
-RUB_CNY_RATE = 11
+CNY_SUPPLIERS = {"Kishmish Games", "One More Time", "Callback Games", "Soviet Games"}
+# Значение по умолчанию; в приложении курс задаётся на экране перед сборкой.
+# Бухгалтерия берёт кросс-курс на конец месяца: (RUB за USD) × (USD за CNY).
+# Март 2026 — 11; август 2026 — 86,299298 × 0,14866 = 12,83.
+RUB_CNY_RATE = 12.83
 
 # ---------------------------------------------------------------------------
 # Валюты в финальном своде по поставщикам
@@ -168,9 +203,11 @@ SUPPLIER_CURRENCY = {
     "Nacon":           "EUR",
     "Daedalic":        "EUR",
     "Quantic Dream":   "EUR",
+    "Mindscape":       "EUR",
     "Kishmish Games":  "CNY",
     "One More Time":   "CNY",
     "Callback Games":  "CNY",
+    "Soviet Games":    "CNY",
     # B2B (по эталону)
     "PLAION":           "EUR",
     "КRM":              "USD",  # источник в TRY, конвертируется в USD

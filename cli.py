@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--r1", type=Path, help="Universal Report (старый формат)")
     parser.add_argument("--r2", type=Path, help="Universal Report shipped (новый формат)")
     parser.add_argument("--genba", type=Path, help="genbaFile с ценами Genba")
+    parser.add_argument("--rub-cny", type=float, default=None,
+                        help="Курс RUB за 1 CNY для CNY-поставщиков (по умолчанию из config.py)")
     parser.add_argument("--out", type=Path, default=Path("./reports"),
                         help="Папка для готовых отчётов (default: ./reports)")
     parser.add_argument(
@@ -40,7 +42,7 @@ def main():
         sys.exit(1)
 
     print(f"→ Загрузка файлов...")
-    pipeline = Pipeline(args.r1, args.r2, args.genba)
+    pipeline = Pipeline(args.r1, args.r2, args.genba, rub_cny_rate=args.rub_cny)
 
     print(f"→ Валидация...")
     v = pipeline.validate()

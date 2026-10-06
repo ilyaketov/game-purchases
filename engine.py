@@ -43,6 +43,10 @@ from config import (
 _PREFIX_RE = re.compile(r"^\w{3}\s+(?:\(\w+\)\s+)?GAMES(?:\s*\([^)]*\))?\.\s*")
 # Хвост типа "Green Man Gaming 2" → удаляем " 2"
 _TRAILING_NUM_RE = re.compile(r"\s+\d+$")
+# Хвостовое уточнение в скобках: '(70/30)', '(Vaultn)', '(Point Nexus)'
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
+# Пометка для поставщиков, которых нет в справочнике (строки не выбрасываются)
+UNKNOWN_SUPPLIER_PREFIX = "НЕ РАСПОЗНАН: "
 
 
 # ===========================================================================
@@ -73,11 +77,40 @@ def classify_supplier(raw_name: str | None) -> str | None:
     core = _PREFIX_RE.sub("", name).strip()
     core_no_num = _TRAILING_NUM_RE.sub("", core).strip()
 
-    return (
+    found = (
         SUPPLIER_MAPPING.get(core_no_num)
         or SUPPLIER_MAPPING.get(core)
         or SUPPLIER_MAPPING.get(name)
     )
+    if found:
+        return found
+
+    # 4. Снимаем хвостовые уточнения в скобках и номера по очереди:
+    #    'Green Man Gaming 3 (70/30)' → 'Green Man Gaming 3' → 'Green Man Gaming',
+    #    'Team17 (Vaultn)' → 'Team17', 'Astragon (Point Nexus)' → 'Astragon'.
+    cur = core
+    for _ in range(4):
+        nxt = _TRAILING_PAREN_RE.sub("", cur).strip()
+        nxt = _TRAILING_NUM_RE.sub("", nxt).strip()
+        if nxt == cur or not nxt:
+            break
+        cur = nxt
+        if cur in SUPPLIER_MAPPING:
+            return SUPPLIER_MAPPING[cur]
+    return None
+
+
+def supplier_group_or_raw(raw_name) -> str | None:
+    """Группа поставщика для свода. Если поставщик не найден в справочнике,
+    строка НЕ выбрасывается: она попадает в свод под пометкой
+    'НЕ РАСПОЗНАН: <имя>', чтобы итог совпадал с биллингом, а ошибка была видна.
+    """
+    g = classify_supplier(raw_name)
+    if g:
+        return g
+    if raw_name is None or pd.isna(raw_name) or not str(raw_name).strip():
+        return UNKNOWN_SUPPLIER_PREFIX + "(пусто)"
+    return UNKNOWN_SUPPLIER_PREFIX + _PREFIX_RE.sub("", str(raw_name).strip()).strip()
 
 
 # ===========================================================================
@@ -140,6 +173,40 @@ def compute_ploshadka_row(partner, in_stock, supplier, prod_ccy=None) -> str | N
     return DEFAULT_B2B_ZONE
 
 
+def coerce_numeric(df: pd.DataFrame, cols: dict, keys=("qty", "base_amount", "prod_amount", "fx_rate", "grand_total")) -> pd.DataFrame:
+    """Приводит денежные/количественные колонки к числам.
+
+    В выгрузках встречаются текстовые заглушки ('n/a' в R1 за август 2026 — 4 412 строк).
+    Без приведения pandas складывает такие колонки как текст и сборка падает.
+    Нечисловые значения превращаются в NaN.
+    """
+    for k in keys:
+        c = cols.get(k)
+        if c and c in df.columns and df[c].dtype == object:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    # ID продукта: в R1 приходит текстом ('19151324'), в R2 и genbaFile — числом.
+    # Без приведения одна позиция распадается на две строки свода, а цена Genba
+    # для строк R1 не находится (поиск идёт по числовому ID).
+    c = cols.get("pid")
+    if c and c in df.columns:
+        df[c] = df[c].map(_normalize_pid)
+    return df
+
+
+def _normalize_pid(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return v
+    if isinstance(v, (int,)) and not isinstance(v, bool):
+        return v
+    try:
+        f = float(str(v).strip().replace(",", "."))
+        if f.is_integer():
+            return int(f)
+    except (ValueError, TypeError):
+        pass
+    return v
+
+
 def add_ploshadka_column(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
     """Добавляет к df колонку SYNTH_PLOSHADKA на основе Партнёр + Ключ куплен в сток + Поставщик.
 
@@ -182,6 +249,9 @@ def add_ploshadka_column(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
 class ValidationResult:
     unmapped_suppliers: dict  # {raw_name: row_count}
     available_ploshadki: dict  # {ploshadka_key: total_rows}
+    # Сколько строк реально прочитано из каждого файла. Если файл распознан,
+    # а строк 0 — данные не на том листе или поменялись заголовки.
+    rows_loaded: dict | None = None  # {"r1": n, "r2": n, "genba": n}
 
     @property
     def is_ok(self) -> bool:
@@ -199,7 +269,11 @@ class Pipeline:
         report1_path: str | Path | None = None,
         report2_path: str | Path | None = None,
         genba_path: str | Path | None = None,
+        rub_cny_rate: float | None = None,
     ):
+        # Курс RUB за 1 CNY для CNY-поставщиков (Kishmish, One More Time, Callback, Soviet Games).
+        # Бухгалтерия берёт кросс-курс на конец месяца: (RUB за USD) × (USD за CNY).
+        self.rub_cny_rate = float(rub_cny_rate) if rub_cny_rate else float(RUB_CNY_RATE)
         self.df1 = self._load_r1(report1_path) if report1_path else pd.DataFrame()
         self.df2 = self._load_r2(report2_path) if report2_path else pd.DataFrame()
         self.genba = self._load_genba(genba_path) if genba_path else pd.DataFrame()
@@ -252,10 +326,15 @@ class Pipeline:
         Колонка 'Ключ куплен в сток' могла отсутствовать в старых выгрузках —
         в этом случае все строки трактуются как закуп (in_stock = NaN → НЕТ).
         """
+        # Ищем лист с данными: в рабочих файлах перед ним бывают листы со сводными
+        # (в августе 2026 — «закуп», «Лист1», «Лист2», «deep silver» перед «выгрузка»).
+        # Раньше R1 читался с первого листа, и все строки R1 терялись.
+        required = [COLS_R1["pid"], COLS_R1["supplier"], COLS_R1["partner"]]
+        sheet = Pipeline._pick_sheet_with_cols(path, required)
         try:
-            head = pd.read_excel(path, engine="calamine", nrows=1)
+            head = pd.read_excel(path, sheet_name=sheet, engine="calamine", nrows=1)
         except (ImportError, ValueError):
-            head = pd.read_excel(path, nrows=1)
+            head = pd.read_excel(path, sheet_name=sheet, nrows=1)
         actual_cols = list(head.columns)
         resolved = Pipeline._resolve_cols(actual_cols, COLS_R1)
         COLS_R1.update(resolved)
@@ -268,9 +347,10 @@ class Pipeline:
                 cols.append(v)
         cols = list(set(cols))
         try:
-            df = pd.read_excel(path, engine="calamine", usecols=cols)
+            df = pd.read_excel(path, sheet_name=sheet, engine="calamine", usecols=cols)
         except (ImportError, ValueError):
-            df = pd.read_excel(path, usecols=cols)
+            df = pd.read_excel(path, sheet_name=sheet, usecols=cols)
+        df = coerce_numeric(df, COLS_R1)
         return add_ploshadka_column(df, COLS_R1)
 
     @staticmethod
@@ -300,6 +380,7 @@ class Pipeline:
             df = pd.read_excel(path, sheet_name=sheet, engine="calamine", usecols=cols)
         except (ImportError, ValueError):
             df = pd.read_excel(path, sheet_name=sheet, usecols=cols)
+        df = coerce_numeric(df, COLS_R2)
         return add_ploshadka_column(df, COLS_R2)
 
     @staticmethod
@@ -318,9 +399,10 @@ class Pipeline:
 
         cols = list({v for v in COLS_GENBA.values()})
         try:
-            return pd.read_excel(path, sheet_name=sheet, engine="calamine", usecols=cols)
+            df = pd.read_excel(path, sheet_name=sheet, engine="calamine", usecols=cols)
         except (ImportError, ValueError):
-            return pd.read_excel(path, sheet_name=sheet, usecols=cols)
+            df = pd.read_excel(path, sheet_name=sheet, usecols=cols)
+        return coerce_numeric(df, COLS_GENBA)
 
     # -----------------------------------------------------------------------
     # Валидация: ищем неизвестные имена поставщиков по всем площадкам
@@ -360,6 +442,11 @@ class Pipeline:
         return ValidationResult(
             unmapped_suppliers=unmapped,
             available_ploshadki=available,
+            rows_loaded={
+                "r1": int(len(self.df1)),
+                "r2": int(len(self.df2)),
+                "genba": int(len(self.genba)),
+            },
         )
 
     @staticmethod
@@ -414,7 +501,13 @@ class Pipeline:
         if combined.empty:
             return pd.DataFrame()
 
-        combined["supplier_group"] = combined["supp"].apply(classify_supplier)
+        # Неизвестных поставщиков не выбрасываем (кроме площадок, где свод по замыслу
+        # неполный — B2B, GamersBase: там в зону попадают продажи из стока сторонних
+        # поставщиков, которые в закуп не идут).
+        if cfg.get("keep_unknown", True):
+            combined["supplier_group"] = combined["supp"].apply(supplier_group_or_raw)
+        else:
+            combined["supplier_group"] = combined["supp"].apply(classify_supplier)
         # RUB-сумма для CNY-поставщиков
         combined["rub_amount"] = combined.apply(
             lambda r: r["base_amount"] if r["base_ccy"] == "RUB" else None, axis=1
@@ -432,6 +525,7 @@ class Pipeline:
                 sum_base=("base_amount", "sum"),
                 sum_rub=("rub_amount", "sum"),
                 sum_prod=("prod_amount", "sum"),
+                base_ccy=("base_ccy", lambda s: s.dropna().mode().iloc[0] if s.dropna().any() else None),
                 prod_ccy=("prod_ccy", lambda s: s.dropna().mode().iloc[0] if s.dropna().any() else None),
                 prod_name=("prod_name", "first"),
                 supp_raw=("supp", "first"),
@@ -440,9 +534,13 @@ class Pipeline:
         )
 
         agg[["unit_price", "currency"]] = agg.apply(
-            lambda r: pd.Series(self._compute_price(r, genba_lookup, fx_lookup)), axis=1
+            lambda r: pd.Series(self._compute_price(r, genba_lookup, fx_lookup,
+                                                    getattr(self, "rub_cny_rate", RUB_CNY_RATE))), axis=1
         )
         agg["cost"] = agg["qty"] * agg["unit_price"]
+        # Строки без группы (только там, где keep_unknown=False) в свод не идут —
+        # убираем их сразу, чтобы итоги на экране, в Excel и CSV совпадали.
+        agg = agg[agg["supplier_group"].notna()].reset_index(drop=True)
         return agg
 
     def _extract_r1_rows(self, filter_value):
@@ -569,7 +667,7 @@ class Pipeline:
         return fx
 
     @staticmethod
-    def _compute_price(row, genba_lookup, fx_lookup=None):
+    def _compute_price(row, genba_lookup, fx_lookup=None, rub_cny_rate=RUB_CNY_RATE):
         """Возвращает (unit_price, currency).
 
         Логика:
@@ -588,8 +686,12 @@ class Pipeline:
 
         # 1. CNY-поставщики
         if sg in CNY_SUPPLIERS:
-            if qty > 0 and pd.notna(row.get("sum_rub")) and row["sum_rub"] != 0:
-                return (row["sum_rub"] / qty / RUB_CNY_RATE, "CNY")
+            rub = row.get("sum_rub")
+            if not (pd.notna(rub) and rub != 0) and row.get("prod_ccy") == "RUB":
+                # базовая валюта не RUB, но цена в валюте продукта — в рублях
+                rub = row.get("sum_prod")
+            if qty > 0 and pd.notna(rub) and rub != 0:
+                return (rub / qty / rub_cny_rate, "CNY")
             return (None, "CNY")
 
         # 2. Genba: сначала из genbaFile, фолбэк на USD-сумму из биллинга
@@ -609,8 +711,13 @@ class Pipeline:
         if pd.notna(sum_prod) and sum_prod != 0 and prod_ccy == target_ccy:
             return (sum_prod / qty, target_ccy)
 
-        # 3b. Итог = USD и есть валидный base (он почти всегда в USD) → используем его
-        if pd.notna(sum_base) and sum_base != 0 and target_ccy == "USD":
+        # 3b. Итог = USD и есть валидный base в USD → используем его.
+        #     Если базовая валюта не USD (KRM в R1 приходит в TRY), сумму брать нельзя —
+        #     иначе 4 800 TRY превращаются в 4 800 USD; идём в конвертацию 3c.
+        base_ccy = row.get("base_ccy")
+        base_is_target = (base_ccy is None or (isinstance(base_ccy, float) and pd.isna(base_ccy))
+                          or str(base_ccy).upper() == target_ccy)
+        if pd.notna(sum_base) and sum_base != 0 and target_ccy == "USD" and base_is_target:
             return (sum_base / qty, target_ccy)
 
         # 3c. Конвертация: prod_amount → target через fx_lookup
