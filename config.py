@@ -152,7 +152,8 @@ SUPPLIER_MAPPING = {
     "Forever-Entertainment":       "Forever-Entertainment",
     "Cyber Temple Games LLC":      "Cyber Temple Games LLC",
     "Astragon":                    "Astragon Entertainment GmbH",
-    "TOPHOUSE GAMES":              "TOPHOUSE GAMES",
+    # TOPHOUSE GAMES закупается через Rokky Limited — в эталоне и QuickBooks поставщик Rokky Limited
+    "TOPHOUSE GAMES":              "Rokky Limited",
     "Mindscape":                   "Mindscape",
     "Soviet Games":                "Soviet Games",
 }
